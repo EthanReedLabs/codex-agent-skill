@@ -1,5 +1,16 @@
 # codex-agent 协议细则（SKILL.md 决策树的完整依据）
 
+## 目录
+
+1. [任务路由表](#1-任务路由表)
+2. [调用参数矩阵与执行通道](#2-调用参数矩阵与执行通道每次调用显式传参不改全局-configtoml)
+3. [前置检查与安全护栏](#3-前置检查与安全护栏工作流启动前依次执行)
+4. [任务书模板](#4-任务书模板codex-首轮-prompt-固定结构)
+5. [汇报协议](#5-汇报协议mcp-经-developer-instructions-注入exec-并入任务书全文固定)
+6. [Thread 生命周期与异常处理](#6-thread-生命周期与异常处理)
+7. [验证闭环](#7-验证闭环claude-侧)
+8. [汇报落盘与恢复](#8-汇报落盘与恢复)
+
 ## 1. 任务路由表
 
 | 类型 | 判定标准 | 执行者 |
@@ -15,7 +26,7 @@
 - T0 进行中发现超出边界 → 立即停手，把已知信息写成任务书升级为 T2。
 - T1 例外：架构决策性质的探索（方案选型、依赖梳理）不降推理档，用默认档。
 - 活跃 thread 涉及的路径范围内，Claude 不做 T0 微编辑；确有必要改动，必须在下一次 codex-reply 中告知改动点。
-- 委托收益边界（**初版基线，历史数据**）：v1 协议 A/B 实测委托 token +15%、耗时 2.4×，得出 ">60k token 才委托" 阈值。**v3 之后该阈值已放宽**：one-shot/脚本化/地图使委托在中等任务上追平甚至快过直做（spec §9.7–9.9）。当前口径：时间上委托无惩罚；60k 阈值仅在"主会话上下文不紧张且任务无需自治"时作为 token 经济性参考，非硬边界。
+- 委托有任务书、启动和验收开销；位置已知的微编辑保留给 Claude。未知结构、跨文件修改、测试循环或长任务优先委托。
 
 ## 2. 调用参数矩阵与执行通道（每次调用显式传参，不改全局 config.toml）
 
@@ -32,10 +43,10 @@
 ### 执行通道：同步 MCP vs 后台 exec
 
 - 预计 <3 分钟的轮次（追问、小修正、验收核对）→ 同步 MCP（`codex` / `codex-reply`）。
-- 预计 ≥3 分钟的长轮、或多个可并行的独立任务 → 后台 exec，经 `scripts/launch.sh` 发射。v3.1 行为：发射前校验 brief 文件非空（缺失/为空拒绝，exit 4——防把空 prompt 发给 codex 烧一轮）；slug 运行锁（同 slug 并发发射直接拒绝 exit 3，绝不归档活跃任务产物）；旧产物任一存在即整套归档为 `.roundN.*`（含 last/events/stderr/marker/**status**——status 必须归档，残留旧终态会让"等 status 出现"的 watcher 对新一轮立即误报完成，实战踩过）；自动埋 marker；显式传 `-c approval_policy="never"`（经 `--strict-config` 实测有效——exec 无 `-a` 旗标，MCP 与 exec 传法不同）；codex 调用挂 `< /dev/null` 防 stdin 挂死；超时熔断（`LAUNCH_TIMEOUT` 默认 900s，先落日志再进程组 TERM→5 秒→KILL 升级）；结束原子写终态文件 `<slug>.status`（status=success/failed/timeout + rc + duration）。**超时轮的工作区状态视为未知，验收前必须核查改动，禁止直接续轮。**
+- 预计 ≥3 分钟的长轮、或多个可并行的独立任务 → 后台 exec，经 `scripts/launch.sh` 发射。脚本校验参数和任务书、锁定 slug、归档上一轮、记录内容与权限基线、从 stdin 传递任务书、用 `--strict-config` 校验覆盖项、超时后终止进程组，并原子写入 `<slug>.status`。**超时轮的工作区状态视为未知，验收前必须核查改动，禁止直接续轮。**
 - **完成判据以 `<slug>.status` 为权威**（失败轮可能根本没有 `.last.md`）。Monitor 兜底监视 `.status` 出现而非 `.last.md`。Claude 只读 `.last.md` 与 `.status`；**严禁读 events.jsonl 全文**（只用 grep 提取字段）。
-- 续接凭据：`grep -m1 -o '"[a-f0-9-]\{36\}"' <slug>.events.jsonl | head -1` 提取 session id，记入 ACTIVE.md（exec 记 session id，MCP 记 threadId，注明通道）。
-- 续接：launch.sh 第 6 参传 resume_session_id（自动带 `--skip-git-repo-check`、sandbox 与 approval 覆盖）。exec 与 MCP 会话不互通，一个工作流全程只用一种通道。
+- 续接凭据：launch.sh 从 JSONL 的 session/thread 字段提取 UUID，写入 `<slug>.session`，并记入 ACTIVE.md（exec 记 session id，MCP 记 threadId，注明通道）。不要用“任意首个 UUID”代替结构化提取。
+- 续接：launch.sh 第 6 参传 resume_session_id。脚本只接受能由当前项目 `.session` 凭证证明的 UUID，并重传 sandbox 与 approval 覆盖；无法证明项目根一致时拒绝并冷启动。若凭证对应的最新 status 是 timeout，先人工审查工作区，再对本次命令显式设置 `CODEX_AGENT_TIMEOUT_REVIEWED=1`；没有该确认时脚本拒绝 resume。exec 与 MCP 会话不互通，一个工作流全程只用一种通道。
 - 并行多个后台 exec 必须范围隔离（各任务书「涉及路径」不重叠）；**同一 git 工作区同时最多一个可写（T2/T3）任务**——并行可写需独立 worktree/分支，只读任务不限。
 - 唤醒兜底（**硬性要求，实测已失灵两次**）：发起后台 exec 的同时**必须**布防独立定时唤醒（Monitor until 循环监视 `<slug>.status` 出现，带超时），不得仅依赖后台完成通知。双通知无害；单通道停摆实测导致 25 与 40 分钟两次空等。"为避免双通知而不布兜底"是被禁止的判断。
 - 非 one-shot 的 exec 任务必须把第 5 节汇报协议全文并入任务书（exec 无 developer-instructions 参数，漏并入 = codex 自由格式汇报）。
@@ -108,8 +119,7 @@
 
 约束：
 - 不要向汇报中粘贴大段代码（>10 行），只给 file:line 引用。
-- 完成标准逐条标注 ✅/❌，每个 ✅ 必须附可复核的原始证据：
-  执行的命令原文、exit code、输出末尾 5 行。禁止只写结论。
+- 完成标准逐条标注 ✅/❌。每个 ✅ 必须在同一行写明结论、执行的命令原文、exit code 与输出摘要；没有逐项证据的结论不要标 ✅。禁止把多个 ✅ 与一条汇总证据拆开书写。
 - 最终消息给精简版（每段 ≤3 条）；同时把完整版汇报（五段全文 +
   附录：关键命令完整输出、diff 摘要）追加写入任务书指定的
   日志文件，本轮标题为 `# Round N`（threadId 由指挥方验收时补记——
@@ -127,7 +137,7 @@
 - sandbox 是 thread 级配置：read-only 的 T1 thread **无法**续接 workspace-write 的 T2 轮。探索后确定要实现的任务，直接开 workspace-write thread，任务书内含"先探索后实现"一轮完成；仅当探索结论需 Claude 决策后才实现时，才拆两个 thread（结论经日志传递）。T2→T3 同为 workspace-write，可同 thread 续接。
 - Claude 每次收到汇报后在可见回复中记录 threadId。
 - 新的独立任务开新 thread。**暖会话例外**：同项目同域新任务，无冲突风险时优先续用暖会话（MCP 用 codex-reply；exec 用 resume）——探索成本归零（B4 实测零探索命令；会话磁盘持久化，跨小时级间隔有效）。复用时在 ACTIVE.md 标注来源 slug。
-  **resume 硬性检查（B4 教训）**：resume 继承原会话 sandbox/cwd 且**不支持 `-s`/`-C`**——sandbox 用 `-c sandbox_mode=... -c sandbox_workspace_write.writable_roots=[...]` 覆盖（launch.sh 自动处理）；**cwd 无法覆盖，只能"继承并校验"**：resume 前核对 ACTIVE.md 记录的原会话项目根与本任务一致，不一致 → 冷启动，禁止 resume。推理档、approval 等 config 同样重新显式传，不假设继承。暖会话省探索不省成文——无事故基线 4 分 42 秒（B5）。代价：prefill 累积增大（B5 实测 517k、82% 缓存命中）——**复用超 3–4 轮或跨天后冷启动换新**。
+  **resume 硬性检查**：resume 继承原会话 cwd 且不支持 `-C`；sandbox 用 config 覆盖。launch.sh 用当前项目内的 `.session` 凭证校验来源，无法证明同根就拒绝。推理档、approval 等 config 每次重新显式传，不假设继承。复用超过 3–4 轮或跨天后冷启动换新，避免历史上下文持续膨胀。
 - 熔断：同一 thread 连续 2 轮无实质进展 → 放弃，重新分析、换策略、开新 thread。
 - 冷启动：任务书「已知上下文」给日志文件路径让 codex 自行阅读，不粘贴历史内容。
 - threadId 失效降级：codex-reply 报错 → 不重试，直接冷启动开新 thread。
@@ -137,7 +147,7 @@
 
 1. codex 按协议汇报（含原始证据）。
 2. `git diff --stat` 核对改动范围（非 git 降级模式：核对汇报中的改动文件清单）。
-3. 后台 exec 通道验收用 `scripts/verify.sh <项目根> <slug> [oneshot|full] [允许路径egrep]` ——v3 是真验收器：非零退出码=不通过。检查项：终态 `status=success`、越界（**git 仓库以 `git status --porcelain` 为权威，含删除/重命名**；非 git 降级只能枚举现存新文件、删除不可检测——该风险须向用户明示）、五个固定标题逐项恰好一次（oneshot 豁免）、❌ 计数为零（unicode 安全）、允许路径过滤（传入 egrep 模式时启用）。✅/❌ 细节判读仍以正文为准。并发场景下 mtime 清单不能做改动归属——以 git 基线 diff 为准。
+3. 后台 exec 通道验收用 `scripts/verify.sh <项目根> <slug> [oneshot|full] [允许路径正则]`。非零退出码即不通过；workspace-write 轮缺少允许路径正则也必须失败。脚本检查终态、相对发射前内容与权限快照的新增/修改/删除、允许路径、五个固定标题、❌、至少一个 ✅，并要求每个 ✅ 同行包含命令、exit code 与输出证据。正则按完整相对路径匹配。
 4. 只抽查关键 hunk，不重读整个文件；每个 ✅ 必须有原始证据（命令 + exit code + 输出尾行），只有结论视为 ❌。
 5. 最终验收：Claude 自己执行一次测试/验证命令，不全信汇报。例外——纯文档类任务免复跑，改为抽查成品 + 核对改动清单。
 6. 全 ✅ 且最终验收通过才收尾；出现 ❌ 或遗留风险 → codex-reply 下修正指令。
@@ -158,7 +168,7 @@
 
 - Claude 在每轮验收后、发起下一轮之前更新对应行；完结改 done，done 条目下次更新时移除。
 - **并发锁（多会话防互踩）**：更新 ACTIVE.md 前先 `mkdir <项目根>/.codex-agent/.lock`（原子操作）抢锁并在锁内写 owner 文件（pid/host/时间），失败则等 2–5 秒重试；更新完删 owner 后 `rmdir` 释放。**强拆条件**：锁超过 60 秒**且** owner 进程已不存活（本机 `kill -0 <pid>` 验证）；owner 无法验证（跨主机/无 owner 文件）时不得自动强拆，提示用户人工处置。
-- **slug 预留必须原子**：「持锁查 ACTIVE.md → 写入占位行 → 释放锁」一个事务内完成，然后才允许发射；launch.sh 的 slug 运行锁（v3）在发射层再拦一道——同 slug 并发发射直接拒绝，绝不归档活跃任务产物。
+- **slug 预留必须原子**：「持锁查 ACTIVE.md → 写入占位行 → 释放锁」一个事务内完成，然后才允许发射；launch.sh 的运行锁在发射层再拦一道——同 slug 并发发射直接拒绝，绝不归档活跃任务产物。
 - 轻量簿记：预计 ≤2 轮的工作流免文件头预写和逐轮维护——结束一次性写简化日志 + ACTIVE.md 一行 done。第 3 轮起转全量。
 
 恢复流程（压缩 / /clear / 会话切换通用）：

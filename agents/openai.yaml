@@ -1,0 +1,7 @@
+interface:
+  display_name: "Codex Agent Orchestrator"
+  short_description: "Delegate coding work to Codex with verified handoffs"
+  default_prompt: "Use $codex-agent to delegate this coding task safely and verify the result."
+
+policy:
+  allow_implicit_invocation: true

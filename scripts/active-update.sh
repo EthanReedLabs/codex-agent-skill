@@ -4,7 +4,11 @@
 #       active-update.sh <项目根> done <slug> "<替换后的完整行内容>"
 # 锁协议：mkdir 原子抢锁 + owner 文件；等待方每 2 秒重试；锁 >60 秒且 owner 进程不存活才强拆
 set -u
+[ "$#" -eq 4 ] || { echo "用法: active-update.sh <项目根> add|update|done <slug> <完整行>" >&2; exit 2; }
 ROOT="$1"; MODE="$2"; SLUG="$3"; LINE="$4"
+case "$SLUG" in ''|*[!a-zA-Z0-9._-]*) echo "INVALID_SLUG slug=$SLUG" >&2; exit 2;; esac
+[ -d "$ROOT" ] || { echo "ROOT_MISSING root=$ROOT" >&2; exit 2; }
+case "$LINE" in "- $SLUG |"*) ;; *) echo "INVALID_LINE expected_prefix=- $SLUG '|'" >&2; exit 2;; esac
 CA="$ROOT/.codex-agent"; LOCK="$CA/.lock"; mkdir -p "$CA"
 WAITED=0
 while ! mkdir "$LOCK" 2>/dev/null; do

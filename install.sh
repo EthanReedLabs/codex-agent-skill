@@ -4,8 +4,8 @@
 # 平台: macOS / Linux / WSL / Git Bash（原生 Windows PowerShell 不支持——请在 WSL 内安装）
 set -u
 SRC="$(cd "$(dirname "$0")" && pwd)"
-CLAUDE_DIR="${HOME}/.claude"
-OK=0; WARN=0
+CLAUDE_DIR="${CODEX_AGENT_CLAUDE_DIR:-${HOME}/.claude}"
+WARN=0
 
 say()  { printf '%s\n' "$*"; }
 pass() { say "  [OK]   $*"; }
@@ -19,7 +19,7 @@ else
 fi
 if command -v claude >/dev/null 2>&1; then pass "Claude Code CLI 已安装"; else warn "未找到 claude CLI"; fi
 PY="$(command -v python3 || command -v python || true)"
-[ -n "$PY" ] && pass "python: $PY" || warn "未找到 python/python3（verify.sh 需要）"
+if [ -n "$PY" ]; then pass "python: $PY"; else warn "未找到 python/python3（verify.sh 需要）"; fi
 case "$(uname -s 2>/dev/null)" in
   Darwin) pass "平台 macOS（全量验证平台）";;
   Linux)  pass "平台 Linux/WSL（兼容；首次使用建议跑一次 T1 冒烟）";;
@@ -33,12 +33,21 @@ if [ -f "$SRC/SKILL.md" ]; then SKILL_SRC="$SRC"; else SKILL_SRC="$SRC/codex-age
 if [ "$SKILL_SRC" = "$TARGET" ]; then
   pass "已在目标位置（git clone 到位或本机维护模式），跳过复制"
 else
-  mkdir -p "$CLAUDE_DIR/skills"
-  cp -R "$SKILL_SRC" "$TARGET"
+  mkdir -p "$TARGET/scripts" "$TARGET/references" "$TARGET/agents"
+  cp "$SKILL_SRC/SKILL.md" "$SKILL_SRC/BRIEF-TEMPLATE.md" "$TARGET/"
+  cp "$SKILL_SRC/scripts/active-update.sh" "$SKILL_SRC/scripts/extract-session.py" "$SKILL_SRC/scripts/launch.sh" \
+    "$SKILL_SRC/scripts/snapshot.py" "$SKILL_SRC/scripts/test.sh" \
+    "$SKILL_SRC/scripts/verify.sh" "$TARGET/scripts/"
+  cp "$SKILL_SRC/references/"* "$TARGET/references/"
+  cp "$SKILL_SRC/agents/openai.yaml" "$TARGET/agents/openai.yaml"
   pass "已安装 $TARGET/"
 fi
-chmod +x "$TARGET/scripts/"*.sh
+chmod +x "$TARGET/scripts/"*.sh "$TARGET/scripts/"*.py
 pass "脚本执行权限已设置"
+# Remove only legacy files formerly owned by this installer; preserve every
+# unknown user file under the target.
+rm -f "$TARGET/docs/PLAN.md" "$TARGET/docs/SPEC.md"
+rmdir "$TARGET/docs" 2>/dev/null || true
 
 say "=== 3/4 CLAUDE.md 触发规则 ==="
 if grep -q '## Codex 委托' "$CLAUDE_DIR/CLAUDE.md" 2>/dev/null; then
@@ -55,7 +64,8 @@ RULE
 fi
 
 say "=== 4/4 MCP 注册检查 ==="
-if grep -q '"codex"' "$HOME/.claude.json" 2>/dev/null; then
+CLAUDE_CONFIG="${CODEX_AGENT_CLAUDE_CONFIG:-$HOME/.claude.json}"
+if grep -q '"codex"' "$CLAUDE_CONFIG" 2>/dev/null; then
   pass "codex MCP server 已注册"
 else
   warn "codex 未注册为 MCP server。执行：claude mcp add --scope user codex -- codex mcp-server"
