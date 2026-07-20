@@ -1,6 +1,6 @@
 ---
 name: codex-agent
-description: Use when a coding task involves exploring ≥3 files, unknown code structure, cross-file changes, or >10-line edits - delegates execution to the codex MCP agent with task briefs, structured reporting, thread reuse, and log persistence. CC 作大脑（拆解/指挥/审查），codex 作执行者（探索/实现/测试）。
+description: Use when a coding task involves exploring ≥3 files, unknown code structure, cross-file changes, >10-line edits across a codebase, project-wide migrations or replacements (e.g. swapping a dependency everywhere), or fixing failing test suites (pytest/jest) until green - delegates execution to the codex MCP agent with task briefs, structured reporting, thread reuse, and log persistence. Trigger for any multi-file implement/refactor/debug/test-fix task even if the user doesn't mention codex; NOT needed for single-file ≤10-line edits or one-off standalone small scripts. CC 作大脑（拆解/指挥/审查），codex 作执行者（探索/实现/修测试）。
 ---
 
 # Codex 委托执行协议（codex-agent）
