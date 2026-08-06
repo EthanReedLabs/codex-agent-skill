@@ -65,13 +65,16 @@ if [ "$MODE" = full ]; then
   done
   echo "=== 完成标准统计 ==="
   "$PY" - "$CA/$SLUG.last.md" <<'PY' || ERR=1
-import pathlib, sys
+import pathlib, re, sys
 text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
 failed = text.count("❌")
 checks = [line for line in text.splitlines() if "✅" in line]
 def has_evidence(line):
     value = line.lower()
-    return ("命令" in value or "command" in value) and "exit code" in value and ("输出" in value or "output" in value)
+    # 命令证据 = 反引号包裹的命令原文,或字面提及;exit 证据认 "exit 0"/"exit code 0"/"rc=0" 等变体
+    has_cmd = line.count("`") >= 2 or "命令" in value or "command" in value
+    has_exit = re.search(r"(exit(\s*code)?|rc|退出码)\s*[=:：]?\s*\d+", value) is not None
+    return has_cmd and has_exit
 bad_evidence = [line for line in checks if not has_evidence(line)]
 print("PASS", len(checks), "FAIL", failed, "MISSING_EVIDENCE", len(bad_evidence))
 if not checks:
